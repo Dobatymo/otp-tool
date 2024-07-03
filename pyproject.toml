@@ -1,0 +1,70 @@
+[build-system]
+build-backend = "flit_core.buildapi"
+
+requires = [
+  "flit-core>=3.2,<4",
+]
+
+[project]
+name = "otp"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Dobatymo", email = "Dobatymo@users.noreply.github.com" },
+]
+requires-python = ">=3.7"
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.7",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dynamic = [
+  "description",
+  "version",
+]
+dependencies = [
+  "genutility[atomic]",
+  "platformdirs",
+  "pynacl",
+  "pyotp",
+  "rich",
+  "typing-extensions",
+]
+
+urls.Home = "https://github.com/Dobatymo/otp-tool"
+
+scripts.otp = "otp:main"
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
+
+lint.extend-select = [
+  "B",
+  "I",
+]
+lint.ignore = [
+  "B011",
+]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = true
+
+[tool.bandit]
+skips = [
+  "B101",
+]
