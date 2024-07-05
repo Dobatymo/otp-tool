@@ -2,10 +2,11 @@
 
 import base64
 import binascii
+import hashlib
 import json
 import logging
 import time
-from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError
 from datetime import datetime
 from getpass import getpass
 from pathlib import Path
@@ -233,6 +234,16 @@ def read_qr_code_screen() -> List[bytes]:
     return results
 
 
+def base32_arg(s: str) -> str:
+    try:
+        base64.b32decode(s, casefold=True)
+    except binascii.Error:
+        msg = f"{s} is not valid base32"
+        raise ArgumentTypeError(msg)
+
+    return s
+
+
 def main():
     DEFAULT_DIGITS = 6
     DEFAULT_INTERVAL = 30
@@ -240,6 +251,12 @@ def main():
     DEFAULT_FILENAME = "otp.json"
 
     DEFAULT_PATH = Path(user_data_dir(APPNAME, APPAUTHOR)) / DEFAULT_FILENAME
+
+    digests = {
+        "sha1": hashlib.sha1,
+        "sha256": hashlib.sha256,
+        "sha512": hashlib.sha512,
+    }
 
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument(
@@ -305,7 +322,9 @@ def main():
     parser.add_argument("--uri", help="OTP otpauth://... URI for --action add-uri.")
     parser.add_argument("--qr-path", type=Path, help="Path to QR code file")
     group = parser.add_mutually_exclusive_group(required=False)
-    group.add_argument("--secret-base32", help="Add TOPT/HOTP by base32 secret with --action add-totp/add-hotp")
+    group.add_argument(
+        "--secret-base32", type=base32_arg, help="Add TOPT/HOTP by base32 secret with --action add-totp/add-hotp"
+    )
     group.add_argument("--secret-hex", help="Add TOPT/HOTP by hex secret with --action add-totp/add-hotp")
 
     parser.add_argument(
@@ -318,7 +337,7 @@ def main():
         "--digest",
         type=str,
         default="sha1",
-        choices=("sha1", "sha256", "sha512"),
+        choices=digests.keys(),
         help="TOPT/HOTP: Digest function to use in the HMAC.",
     )
     parser.add_argument("--name", type=str, default=None, help="TOPT/HOTP: Account name.")
@@ -462,14 +481,14 @@ def main():
     elif args.action == "add-totp":
         kwargs = {
             "digits": args.digits,
-            "digest": args.digest,
+            "digest": digests[args.digest],
             "name": args.name,
             "issuer": args.issuer,
             "interval": args.interval,
         }
 
         if args.secret_base32:
-            otp = pyotp.TOTP(args.base32_secret, **kwargs)
+            otp = pyotp.TOTP(args.secret_base32, **kwargs)
             otpman.add_otp(otp)
         elif args.secret_hex:
             otp = pyotp.TOTP(hex_to_base32(args.secret_hex), **kwargs)
@@ -484,7 +503,7 @@ def main():
         kwargs = {
             "initial_count": args.initial_count,
             "digits": args.digits,
-            "digest": args.digest,
+            "digest": digests[args.digest],
             "name": args.name,
             "issuer": args.issuer,
         }

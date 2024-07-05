@@ -23,3 +23,7 @@ Python 3.7+.
 
 - without QR feature: `pip install git+https://github.com/Dobatymo/otp-tool`
 - with QR featrue: `pip install "otp[qr] @ git+https://github.com/Dobatymo/otp-tool"`
+
+## Demo
+
+![](https://github.com/Dobatymo/otp-tool/blob/master/docs/otp.gif)
