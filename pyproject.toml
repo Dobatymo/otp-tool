@@ -1,12 +1,19 @@
 [build-system]
 build-backend = "flit_core.buildapi"
-
 requires = [
   "flit-core>=3.2,<4",
 ]
 
 [project]
 name = "otp"
+readme = { file = "readme.md", content-type = "text/markdown" }
+keywords = [
+  "2fa",
+  "authenticator",
+  "mfa",
+  "otp",
+  "totp",
+]
 license = { file = "LICENSE" }
 authors = [
   { name = "Dobatymo", email = "Dobatymo@users.noreply.github.com" },
@@ -34,9 +41,12 @@ dependencies = [
   "rich",
   "typing-extensions",
 ]
-
-urls.Home = "https://github.com/Dobatymo/otp-tool"
-
+optional-dependencies.qr = [
+  "mss",
+  "pillow",
+  "pyzbar",
+]
+urls.Homepage = "https://github.com/Dobatymo/otp-tool"
 scripts.otp = "otp:main"
 
 [tool.black]
@@ -44,7 +54,6 @@ line-length = 120
 
 [tool.ruff]
 line-length = 120
-
 lint.extend-select = [
   "B",
   "I",

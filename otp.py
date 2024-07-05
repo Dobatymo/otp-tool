@@ -3,12 +3,13 @@
 import base64
 import binascii
 import json
+import logging
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from datetime import datetime
 from getpass import getpass
 from pathlib import Path
-from typing import List, Tuple, TypedDict
+from typing import List, Optional, Tuple, TypedDict
 
 import pyotp
 from genutility.atomic import write_file
@@ -71,7 +72,7 @@ class OTP:
         self.path = path
 
         self.kdf_config = kdf_config
-        self.key = key
+        self.key: Optional[bytes] = key
         self.otps = otps
 
     @classmethod
@@ -109,6 +110,7 @@ class OTP:
         return cls(path, kdf_config, key, otps)
 
     def write_file(self) -> None:
+        assert self.key is not None
         box = SecretBox(self.key)
         plaintext = json.dumps([otp.provisioning_uri() for otp in self.otps]).encode("utf-8")
         encrypted = box.encrypt(plaintext)
@@ -127,7 +129,7 @@ class OTP:
         return self.otps.pop(index)
 
     def _make_table(self):
-        table = Table(title="One-time passwords")
+        table = Table(title="One-time passwords (press ctrl-c to quit)")
 
         table.add_column("ID")
         table.add_column("Name")
@@ -145,8 +147,8 @@ class OTP:
         if self.otps:
             with Live(self._make_table(), screen=True, auto_refresh=False) as live:
                 while True:
-                    live.update(self._make_table(), refresh=True)
                     time.sleep(1)
+                    live.update(self._make_table(), refresh=True)
         else:
             print("No OTPs available")
 
@@ -172,6 +174,65 @@ def get_secret(prompt: str, secret: str, repeat: bool) -> str:
     return secret
 
 
+def read_qr_code(path: Path, preprocess: bool = True) -> List[bytes]:
+    from PIL import Image, ImageEnhance, ImageOps
+    from pyzbar.pyzbar import decode
+
+    with Image.open(path) as im:
+
+        if im.mode == "LA":
+            im = im.convert("RGBA")
+
+        if im.mode == "RGBA":
+            # Since we don't know what part of the image is transparent
+            # we composite it on a gray image and adjust the contrast.
+            # This should work no matter the white, the black
+            # or the outside part of the qr code image is transparent.
+            background = Image.new("RGBA", im.size, (128, 128, 128, 255))
+            im = Image.alpha_composite(background, im)
+            im = im.convert("RGB")
+            im = ImageOps.autocontrast(im)
+
+        if im.mode != "RGB":
+            logging.debug("Image file is not RGB, but %s", im.mode)
+
+        results = decode(im)
+        if results:
+            return [r.data for r in results]
+
+        x, y = im.size
+        for scale in [0.25, 0.5, 2, 4]:
+            image_scaled = im.resize((int(x * scale), int(y * scale)))
+            results = decode(image_scaled)
+            if results:
+                return [r.data for r in results]
+
+            for sharpness in [0.25, 0.5, 2, 4]:
+                sharpener = ImageEnhance.Sharpness(image_scaled)
+                image_scaled_sharp = sharpener.enhance(sharpness)
+                results = decode(image_scaled_sharp)
+                print(scale, sharpness)
+                if results:
+                    return [r.data for r in results]
+
+    return []
+
+
+def read_qr_code_screen() -> List[bytes]:
+    import mss
+    from PIL import Image
+    from pyzbar.pyzbar import decode
+
+    results: List[bytes] = []
+    with mss.mss() as sct:
+        for monitor in sct.monitors[1:]:
+            sct_img = sct.grab(monitor)
+            img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            results.extend(r.data for r in decode(img))
+
+    return results
+
+
 def main():
     DEFAULT_DIGITS = 6
     DEFAULT_INTERVAL = 30
@@ -183,9 +244,24 @@ def main():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument(
         "--action",
-        choices=("show", "add-uri", "add-totp", "add-hotp", "remove", "export", "change-password"),
+        choices=(
+            "show",
+            "add-uri",
+            "add-qr-code",
+            "add-qr-code-screen",
+            "add-totp",
+            "add-hotp",
+            "remove",
+            "export",
+            "change-password",
+        ),
         default="show",
         help="Action to chose.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print debug information",
     )
     parser.add_argument(
         "--path",
@@ -227,6 +303,7 @@ def main():
     )
 
     parser.add_argument("--uri", help="OTP otpauth://... URI for --action add-uri.")
+    parser.add_argument("--qr-path", type=Path, help="Path to QR code file")
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--secret-base32", help="Add TOPT/HOTP by base32 secret with --action add-totp/add-hotp")
     group.add_argument("--secret-hex", help="Add TOPT/HOTP by hex secret with --action add-totp/add-hotp")
@@ -258,6 +335,11 @@ def main():
 
     args = parser.parse_args()
 
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
     args.path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.path.exists():
@@ -281,6 +363,8 @@ def main():
     if args.action == "show":
         if args.uri or args.secret_base32 or args.secret_hex:
             parser.error("Use --action add with --uri, --secret-base32 or --secret-hex arguments")
+
+        otpman.key = None  # key is not used anymore, forget it
 
         if args.exit:
             otpman.print_table()
@@ -326,6 +410,54 @@ def main():
         otpman.add_otp(otp)
         otpman.write_file()
         print("OTP added")
+
+    elif args.action == "add-qr-code":
+        if args.qr_path is None:
+            parser.error("--action add-qr-code requires --qr-path")
+
+        results = read_qr_code(args.qr_path)
+
+        if not results:
+            parser.error("No QR code could be found in the image")
+
+        modified = False
+        for data in results:
+            uri = data.decode("ascii")
+
+            try:
+                otp = pyotp.parse_uri(uri)
+            except ValueError as e:
+                print(f"{e}: {uri}")
+            else:
+                otpman.add_otp(otp)
+                modified = True
+                print(f"OTP Name={otp.name} Issuer={otp.issuer} added")
+
+        if modified:
+            otpman.write_file()
+
+    elif args.action == "add-qr-code-screen":
+
+        results = read_qr_code_screen()
+
+        if not results:
+            parser.error("No QR code could be found on the screen")
+
+        modified = False
+        for data in results:
+            uri = data.decode("ascii")
+
+            try:
+                otp = pyotp.parse_uri(uri)
+            except ValueError as e:
+                print(f"{e}: {uri}")
+            else:
+                otpman.add_otp(otp)
+                modified = True
+                print(f"OTP Name={otp.name} Issuer={otp.issuer} added")
+
+        if modified:
+            otpman.write_file()
 
     elif args.action == "add-totp":
         kwargs = {
