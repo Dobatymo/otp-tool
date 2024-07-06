@@ -2,7 +2,7 @@
 
 ## Features
 
-- Generate time-based one-time passwords (also called 2FA or MFA tokens)
+- Generate time-based one-time passwords (also called 2FA or MFA tokens) according to [RFC 6238](https://datatracker.ietf.org/doc/html/rfc6238)
   - include additional information like name, issuer and remaining time
   - print and exit or show a live refreshing table view
 - Fully offline, no internet access whatsoever
@@ -17,7 +17,7 @@
 
 ## Requirements
 
-Python 3.7+.
+Python 3.8+.
 
 ## Install
 
