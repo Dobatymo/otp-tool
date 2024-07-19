@@ -12,8 +12,9 @@
 - Read QR codes from file or find them on the screen (with multi monitor support)
 
 ## Possible improvements
-- Improve export in different formats
+- Add importing (aligned to exports, and possibly from other authenticator apps)
 - The CLI command interface is still a bit tedious to use
+- Confirm delete or "add using qr code" operations
 
 ## Requirements
 
@@ -24,6 +25,34 @@ Python 3.8+.
 - without QR feature: `pip install git+https://github.com/Dobatymo/otp-tool`
 - with QR featrue: `pip install "otp[qr] @ git+https://github.com/Dobatymo/otp-tool"`
 
-## Demo
+## CLI help
+
+```
+usage: otp.py [-h] [--verbose] [--path PATH] [--secret ASCII-STRING]
+              {show,export,change-password,remove,screenshot-qr,add-qr,add-uri,add-totp,add-hotp} ...
+
+positional arguments:
+  {show,export,change-password,remove,screenshot-qr,add-qr,add-uri,add-totp,add-hotp}
+    show                Show OTP tokens
+    export              Export OTP secrets (not tokens) to file or print to screen
+    change-password     Change password secrets database file
+    remove              Remove OTP from database
+    screenshot-qr       Add OTP to database by takeing a screenshot and scan for QR codes.
+    add-qr              Add OTP to database by reading a QR code from a image file.
+    add-uri             Add OTP to database by otpauth URI
+    add-totp            Add Time-based one-time password (TOTP)
+    add-hotp            Add HMAC-based one-time password (HOTP)
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --verbose             Print debug information (default: False)
+  --path PATH           Path to the file where the secrets are stored. (default:
+                        C:\Users\<username>\AppData\Local\Dobatymo\otp-tool\otp.json)
+  --secret ASCII-STRING
+                        Password to encrypt OTP file. Needs to be ASCII. If not specified it will show a input prompt.
+                        (default: None)
+```
+
+## Demo (CLI interface has since been changed)
 
 ![](https://github.com/Dobatymo/otp-tool/blob/master/docs/otp.gif)

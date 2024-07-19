@@ -2,18 +2,20 @@
 
 import base64
 import binascii
+import csv
 import hashlib
 import json
 import logging
-import time
-from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError, Namespace
 from datetime import datetime
 from getpass import getpass
 from pathlib import Path
-from typing import List, Optional, Tuple, TypedDict
+from time import sleep
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, TypeVar
 
 import pyotp
 from genutility.atomic import write_file
+from genutility.file import StdoutFile
 from nacl import pwhash
 from nacl.exceptions import CryptoError
 from nacl.secret import SecretBox
@@ -25,6 +27,8 @@ from rich.table import Table
 from typing_extensions import Self
 
 __version__ = "0.0.1"
+
+T = TypeVar("T")
 
 APPNAME = "otp-tool"
 APPAUTHOR = "Dobatymo"
@@ -148,7 +152,7 @@ class OTP:
         if self.otps:
             with Live(self._make_table(), screen=True, auto_refresh=False) as live:
                 while True:
-                    time.sleep(1)
+                    sleep(1)
                     live.update(self._make_table(), refresh=True)
         else:
             print("No OTPs available")
@@ -159,7 +163,7 @@ class OTP:
         console.print(table)
 
 
-def get_secret(prompt: str, secret: str, repeat: bool) -> str:
+def get_secret(prompt: str, secret: Optional[str], repeat: bool) -> str:
     if secret is None:
         secret = getpass(f"{prompt}: ")
         if repeat:
@@ -180,7 +184,6 @@ def read_qr_code(path: Path, preprocess: bool = True) -> List[bytes]:
     from pyzbar.pyzbar import decode
 
     with Image.open(path) as im:
-
         if im.mode == "LA":
             im = im.convert("RGBA")
 
@@ -239,9 +242,213 @@ def base32_arg(s: str) -> str:
         base64.b32decode(s, casefold=True)
     except binascii.Error:
         msg = f"{s} is not valid base32"
-        raise ArgumentTypeError(msg)
+        raise ArgumentTypeError(msg) from None
 
     return s
+
+
+def mapping_arg(d: Dict[str, T]) -> Callable[[str], T]:
+    def inner(obj: str) -> T:
+        try:
+            return d[obj]
+        except KeyError:
+            msg = f"Must be one of {', '.join(d)}"
+            raise ArgumentTypeError(msg) from None
+
+    return inner
+
+
+def cmd_show(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    otpman.key = None  # key is not used anymore, forget it
+
+    if args.exit:
+        otpman.print_table()
+    else:
+        try:
+            otpman.live_table()
+        except KeyboardInterrupt:
+            print("Interrupted")
+
+    return 0
+
+
+def otp_to_json(otp: pyotp.OTP) -> Dict[str, Any]:
+    if isinstance(otp, pyotp.TOTP):
+        return {
+            "type": type(otp).__name__,
+            "secret": otp.secret,
+            "name": otp.name,
+            "issuer": otp.issuer,
+            "digits": otp.digits,
+            "digest": otp.digest().name,
+            "interval": otp.interval,
+        }
+    elif isinstance(otp, pyotp.HOTP):
+        return {
+            "type": type(otp).__name__,
+            "secret": otp.secret,
+            "name": otp.name,
+            "issuer": otp.issuer,
+            "digits": otp.digits,
+            "digest": otp.digest().name,
+            "initial_count": otp.initial_count,
+        }
+    else:
+        raise TypeError()
+
+
+def cmd_export(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    if args.format == "url":
+        with StdoutFile(args.out, "xt", encoding="utf-8") as fw:
+            for otp in otpman.otps:
+                fw.write(f"{otp.provisioning_uri()}\n")
+    elif args.format == "json":
+        with StdoutFile(args.out, "xt", encoding="utf-8") as fw:
+            out = [otp_to_json(otp) for otp in otpman.otps]
+            json.dump(out, fw)
+    elif args.format == "csv":
+        with StdoutFile(args.out, "xt", encoding="utf-8", newline="") as fw:
+            fieldnames = ["type", "secret", "name", "issuer", "digits", "digest", "interval", "initial_count"]
+            writer = csv.DictWriter(fw, fieldnames)
+            writer.writeheader()
+            for otp in otpman.otps:
+                # DictWriter treats None values like missing values and replaces them with a empty string
+                writer.writerow(otp_to_json(otp))
+
+    return 0
+
+
+def cmd_change_password(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    new_secret = get_secret("Password (new)", args.secret_new, repeat=True)
+    kdf_config, key = otpman.get_new_key(new_secret, args.opslimit, args.memlimit)
+    otpman.kdf_config = kdf_config
+    otpman.key = key
+    otpman.write_file()
+    print("Changed password")
+    return 0
+
+
+def cmd_remove(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    try:
+        otp = otpman.remove_otp(args.id)
+    except IndexError:
+        print(f"Invalid OTP id: {args.id}")
+        return 1
+    else:
+        otpman.write_file()
+        print(f"OTP ID={args.id} Name={otp.name} Issuer={otp.issuer} removed")
+        return 0
+
+
+def cmd_screenshot_qr(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    sleep(args.delay)
+
+    results = read_qr_code_screen()
+
+    if not results:
+        parser.error("No QR code could be found on the screen")
+
+    modified = False
+    for data in results:
+        uri = data.decode("ascii")
+
+        try:
+            otp = pyotp.parse_uri(uri)
+        except ValueError as e:
+            print(f"{e}: {uri}")
+        else:
+            otpman.add_otp(otp)
+            modified = True
+            print(f"OTP Name={otp.name} Issuer={otp.issuer} added")
+
+    if modified:
+        otpman.write_file()
+        return 0
+    else:
+        return 1
+
+
+def cmd_add_qr(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    try:
+        results = read_qr_code(args.qr_path)
+    except FileNotFoundError:
+        parser.error(f"--qr-path `{args.qr_path}` not found")
+
+    if not results:
+        parser.error("No QR code could be found in the image")
+
+    modified = False
+    for data in results:
+        uri = data.decode("ascii")
+
+        try:
+            otp = pyotp.parse_uri(uri)
+        except ValueError as e:
+            print(f"{e}: {uri}")
+        else:
+            otpman.add_otp(otp)
+            modified = True
+            print(f"OTP Name={otp.name} Issuer={otp.issuer} added")
+
+    if modified:
+        otpman.write_file()
+        return 0
+    else:
+        return 1
+
+
+def cmd_add_uri(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    try:
+        otp = pyotp.parse_uri(args.uri)
+    except ValueError as e:
+        parser.error(str(e))
+
+    otpman.add_otp(otp)
+    otpman.write_file()
+    print("OTP added")
+    return 0
+
+
+def cmd_add_totp(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    kwargs = {
+        "digits": args.digits,
+        "digest": args.digest,
+        "name": args.name,
+        "issuer": args.issuer,
+        "interval": args.interval,
+    }
+
+    if args.secret:
+        otp = pyotp.TOTP(args.secret, **kwargs)
+        otpman.add_otp(otp)
+    elif args.secret_hex:
+        otp = pyotp.TOTP(hex_to_base32(args.secret_hex), **kwargs)
+        otpman.add_otp(otp)
+
+    otpman.write_file()
+    print("TOTP added")
+    return 0
+
+
+def cmd_add_hotp(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    kwargs = {
+        "initial_count": args.initial_count,
+        "digits": args.digits,
+        "digest": args.digest,
+        "name": args.name,
+        "issuer": args.issuer,
+    }
+
+    if args.secret:
+        otp = pyotp.HOTP(args.secret, **kwargs)
+        otpman.add_otp(otp)
+    elif args.secret_hex:
+        otp = pyotp.HOTP(hex_to_base32(args.secret_hex), **kwargs)
+        otpman.add_otp(otp)
+
+    otpman.write_file()
+    print("HOTP added")
+    return 0
 
 
 def main():
@@ -249,6 +456,7 @@ def main():
     DEFAULT_INTERVAL = 30
     DEFAULT_INITIAL_COUNT = 0
     DEFAULT_FILENAME = "otp.json"
+    DEFAULT_EXPORT_FORMAT = "url"
 
     DEFAULT_PATH = Path(user_data_dir(APPNAME, APPAUTHOR)) / DEFAULT_FILENAME
 
@@ -260,22 +468,6 @@ def main():
 
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument(
-        "--action",
-        choices=(
-            "show",
-            "add-uri",
-            "add-qr-code",
-            "add-qr-code-screen",
-            "add-totp",
-            "add-hotp",
-            "remove",
-            "export",
-            "change-password",
-        ),
-        default="show",
-        help="Action to chose.",
-    )
-    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print debug information",
@@ -283,77 +475,170 @@ def main():
     parser.add_argument(
         "--path",
         type=Path,
+        metavar="PATH",
         default=DEFAULT_PATH,
         help="Path to the file where the secrets are stored.",
     )
     parser.add_argument(
         "--secret",
         type=str,
+        metavar="ASCII-STRING",
         help="Password to encrypt OTP file. Needs to be ASCII. If not specified it will show a input prompt.",
     )
-    parser.add_argument(
+
+    subparsers = parser.add_subparsers(dest="action", required=False)
+
+    parser_show = subparsers.add_parser("show", help="Show OTP tokens", formatter_class=ArgumentDefaultsHelpFormatter)
+    parser_show.add_argument(
+        "--exit",
+        action="store_true",
+        help="Print tokens and exit. Otherwise show a live refreshing table.",
+    )
+    parser_show.set_defaults(func=cmd_show)
+
+    parser_export = subparsers.add_parser(
+        "export",
+        help="Export OTP secrets (not tokens) to file or print to screen",
+        formatter_class=ArgumentDefaultsHelpFormatter,
+    )
+    parser_export.add_argument(
+        "--format",
+        choices=("url", "csv", "json"),
+        default=DEFAULT_EXPORT_FORMAT,
+        help="Export file format",
+    )
+    parser_export.add_argument(
+        "--out",
+        type=Path,
+        metavar="PATH",
+        help="Write exported secrets to path. Otherwise they will be printed.",
+    )
+    parser_export.set_defaults(func=cmd_export)
+
+    parser_password = subparsers.add_parser(
+        "change-password", help="Change password secrets database file", formatter_class=ArgumentDefaultsHelpFormatter
+    )
+    parser_password.add_argument(
         "--secret-new",
         type=str,
-        help="Use to set new password for --action change-password",
+        metavar="ASCII-STRING",
+        help="New password. If not specified it will show a input prompt.",
     )
-    parser.add_argument(
+    parser_password.add_argument(
         "--opslimit",
         type=int,
+        metavar="N",
         default=DEFAULT_OPSLIMIT,
         help="Specifies the opslimit for new files or for --action change-password",
     )
-    parser.add_argument(
+    parser_password.add_argument(
         "--memlimit",
         type=int,
+        metavar="N",
         default=DEFAULT_MEMLIMIT,
         help="Specifies the memlimit for new files or for --action change-password",
     )
-    parser.add_argument(
-        "--exit",
-        action="store_true",
-        help="Print the tokens for --action show and exit. Otherwise show a live refreshing table.",
+    parser_password.set_defaults(func=cmd_change_password)
+
+    parser_remove = subparsers.add_parser(
+        "remove", help="Remove OTP from database", formatter_class=ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument(
+    parser_remove.add_argument(
         "--id",
         type=int,
-        help="OTP ID for --action remove. The ID is shown when using --action show.",
+        metavar="N",
+        required=True,
+        help="OTP ID to remove. The ID is shown when using show command.",
     )
+    parser_remove.set_defaults(func=cmd_remove)
 
-    parser.add_argument("--uri", help="OTP otpauth://... URI for --action add-uri.")
-    parser.add_argument("--qr-path", type=Path, help="Path to QR code file")
-    group = parser.add_mutually_exclusive_group(required=False)
-    group.add_argument(
-        "--secret-base32", type=base32_arg, help="Add TOPT/HOTP by base32 secret with --action add-totp/add-hotp"
+    parser_screenshot_qr = subparsers.add_parser(
+        "screenshot-qr",
+        help="Add OTP to database by takeing a screenshot and scan for QR codes.",
+        formatter_class=ArgumentDefaultsHelpFormatter,
     )
-    group.add_argument("--secret-hex", help="Add TOPT/HOTP by hex secret with --action add-totp/add-hotp")
+    parser_screenshot_qr.add_argument(
+        "--delay",
+        metavar="N",
+        type=float,
+        default=0,
+        help="Delay screenshot by N seconds.",
+    )
+    parser_screenshot_qr.set_defaults(func=cmd_screenshot_qr)
 
-    parser.add_argument(
+    parser_add_qr = subparsers.add_parser(
+        "add-qr",
+        help="Add OTP to database by reading a QR code from a image file.",
+        formatter_class=ArgumentDefaultsHelpFormatter,
+    )
+    parser_add_qr.add_argument("--qr-path", type=Path, metavar="PATH", required=True, help="Path to QR code file")
+    parser_add_qr.set_defaults(func=cmd_add_qr)
+
+    parser_add_uri = subparsers.add_parser(
+        "add-uri", help="Add OTP to database by otpauth URI", formatter_class=ArgumentDefaultsHelpFormatter
+    )
+    parser_add_uri.add_argument("--uri", required=True, help="OTP otpauth://... URI")
+    parser_add_uri.set_defaults(func=cmd_add_uri)
+
+    parser_add_totp = subparsers.add_parser(
+        "add-totp", help="Add Time-based one-time password (TOTP)", formatter_class=ArgumentDefaultsHelpFormatter
+    )
+    group = parser_add_totp.add_mutually_exclusive_group(required=True)
+    group.add_argument("--secret", type=base32_arg, metavar="BASE32-STRING", help="Add TOPT using base32 secret")
+    group.add_argument("--secret-hex", metavar="HEX-STRING", help="Add TOPT using hex secret")
+    parser_add_totp.add_argument(
         "--digits",
         type=int,
+        metavar="N",
         default=DEFAULT_DIGITS,
-        help="TOPT/HOTP: Number of integers in the OTP. Some apps expect this to be 6 digits, others support more.",
+        help="Number of digits of the token. Some apps expect this to be 6 digits, others support more.",
     )
-    parser.add_argument(
+    parser_add_totp.add_argument(
         "--digest",
-        type=str,
+        type=mapping_arg(digests),
         default="sha1",
         choices=digests.keys(),
-        help="TOPT/HOTP: Digest function to use in the HMAC.",
+        help="Digest function to use in the HMAC.",
     )
-    parser.add_argument("--name", type=str, default=None, help="TOPT/HOTP: Account name.")
-    parser.add_argument("--issuer", type=str, default=None, help="TOPT/HOTP: Issuer.")
-    parser.add_argument(
-        "--interval", type=int, default=DEFAULT_INTERVAL, help="Time interval in seconds for --action add-totp."
+    parser_add_totp.add_argument("--name", type=str, metavar="TEXT", default=None, help="Account name.")
+    parser_add_totp.add_argument("--issuer", type=str, metavar="TEXT", default=None, help="Issuer.")
+    parser_add_totp.add_argument(
+        "--interval", type=int, metavar="N", default=DEFAULT_INTERVAL, help="Time interval in seconds"
     )
-    parser.add_argument(
+    parser_add_totp.set_defaults(func=cmd_add_totp)
+
+    parser_add_hotp = subparsers.add_parser(
+        "add-hotp", help="Add HMAC-based one-time password (HOTP)", formatter_class=ArgumentDefaultsHelpFormatter
+    )
+    group = parser_add_hotp.add_mutually_exclusive_group(required=True)
+    group.add_argument("--secret", type=base32_arg, metavar="BASE32-STRING", help="Add HOTP using base32 secret")
+    group.add_argument("--secret-hex", metavar="HEX-STRING", help="Add HOTP using hex secret")
+    parser_add_hotp.add_argument(
+        "--digits",
+        type=int,
+        metavar="N",
+        default=DEFAULT_DIGITS,
+        help="Number of digits of the token. Some apps expect this to be 6 digits, others support more.",
+    )
+    parser_add_hotp.add_argument(
+        "--digest",
+        type=mapping_arg(digests),
+        default="sha1",
+        choices=digests.keys(),
+        help="Digest function to use in the HMAC.",
+    )
+    parser_add_hotp.add_argument("--name", type=str, default=None, help="Account name.")
+    parser_add_hotp.add_argument("--issuer", type=str, default=None, help="Issuer.")
+    parser_add_hotp.add_argument(
         "--initial-count",
         type=int,
+        metavar="N",
         default=DEFAULT_INITIAL_COUNT,
-        help="Starting HMAC counter value for --action add-hotp.",
+        help="Starting HMAC counter value",
     )
+    parser_add_hotp.set_defaults(func=cmd_add_hotp)
 
     args = parser.parse_args()
-
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
     else:
@@ -379,149 +664,11 @@ def main():
         otpman.write_file()
         print("Created new OTP file")
 
-    if args.action == "show":
-        if args.uri or args.secret_base32 or args.secret_hex:
-            parser.error("Use --action add with --uri, --secret-base32 or --secret-hex arguments")
-
-        otpman.key = None  # key is not used anymore, forget it
-
-        if args.exit:
-            otpman.print_table()
-        else:
-            try:
-                otpman.live_table()
-            except KeyboardInterrupt:
-                print("Interrupted")
-
-    elif args.action == "export":
-        for otp in otpman.otps:
-            print(otp.provisioning_uri())
-
-    elif args.action == "change-password":
-        new_secret = get_secret("Password (new)", args.secret_new, repeat=True)
-        kdf_config, key = otpman.get_new_key(new_secret, args.opslimit, args.memlimit)
-        otpman.kdf_config = kdf_config
-        otpman.key = key
-        otpman.write_file()
-        print("Changed password")
-
-    elif args.action == "remove":
-        if args.id is None:
-            parser.error("--id required for --action remove")
-
-        try:
-            otp = otpman.remove_otp(args.id)
-        except IndexError:
-            print(f"Invalid OTP id: {args.id}")
-        else:
-            otpman.write_file()
-            print(f"OTP ID={args.id} Name={otp.name} Issuer={otp.issuer} removed")
-
-    elif args.action == "add-uri":
-        if args.uri is None:
-            parser.error("--action add-uri requires --uri")
-
-        try:
-            otp = pyotp.parse_uri(args.uri)
-        except ValueError as e:
-            parser.error(str(e))
-
-        otpman.add_otp(otp)
-        otpman.write_file()
-        print("OTP added")
-
-    elif args.action == "add-qr-code":
-        if args.qr_path is None:
-            parser.error("--action add-qr-code requires --qr-path")
-
-        results = read_qr_code(args.qr_path)
-
-        if not results:
-            parser.error("No QR code could be found in the image")
-
-        modified = False
-        for data in results:
-            uri = data.decode("ascii")
-
-            try:
-                otp = pyotp.parse_uri(uri)
-            except ValueError as e:
-                print(f"{e}: {uri}")
-            else:
-                otpman.add_otp(otp)
-                modified = True
-                print(f"OTP Name={otp.name} Issuer={otp.issuer} added")
-
-        if modified:
-            otpman.write_file()
-
-    elif args.action == "add-qr-code-screen":
-
-        results = read_qr_code_screen()
-
-        if not results:
-            parser.error("No QR code could be found on the screen")
-
-        modified = False
-        for data in results:
-            uri = data.decode("ascii")
-
-            try:
-                otp = pyotp.parse_uri(uri)
-            except ValueError as e:
-                print(f"{e}: {uri}")
-            else:
-                otpman.add_otp(otp)
-                modified = True
-                print(f"OTP Name={otp.name} Issuer={otp.issuer} added")
-
-        if modified:
-            otpman.write_file()
-
-    elif args.action == "add-totp":
-        kwargs = {
-            "digits": args.digits,
-            "digest": digests[args.digest],
-            "name": args.name,
-            "issuer": args.issuer,
-            "interval": args.interval,
-        }
-
-        if args.secret_base32:
-            otp = pyotp.TOTP(args.secret_base32, **kwargs)
-            otpman.add_otp(otp)
-        elif args.secret_hex:
-            otp = pyotp.TOTP(hex_to_base32(args.secret_hex), **kwargs)
-            otpman.add_otp(otp)
-        else:
-            parser.error("For --action add-totp either --secret-base32 or --secret-hex is required")
-
-        otpman.write_file()
-        print("TOTP added")
-
-    elif args.action == "add-hotp":
-        kwargs = {
-            "initial_count": args.initial_count,
-            "digits": args.digits,
-            "digest": digests[args.digest],
-            "name": args.name,
-            "issuer": args.issuer,
-        }
-
-        if args.secret_base32:
-            otp = pyotp.HOTP(args.base32_secret, **kwargs)
-            otpman.add_otp(otp)
-        elif args.secret_hex:
-            otp = pyotp.HOTP(hex_to_base32(args.secret_hex), **kwargs)
-            otpman.add_otp(otp)
-        else:
-            parser.error("For --action add-hotp either --secret-base32 or --secret-hex is required")
-
-        otpman.write_file()
-        print("HOTP added")
-
+    if args.action is None:
+        args.exit = False
+        cmd_show(parser, args, otpman)
     else:
-        assert False
+        args.func(parser, args, otpman)
 
 
 if __name__ == "__main__":

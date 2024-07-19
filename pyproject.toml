@@ -33,7 +33,7 @@ dynamic = [
   "version",
 ]
 dependencies = [
-  "genutility[atomic]",
+  "genutility[atomic,file]",
   "platformdirs",
   "pynacl",
   "pyotp",
