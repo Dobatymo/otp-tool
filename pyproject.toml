@@ -33,16 +33,16 @@ dynamic = [
   "version",
 ]
 dependencies = [
-  "genutility[atomic,file]",
-  "platformdirs",
-  "pynacl",
-  "pyotp",
-  "rich",
-  "typing-extensions",
+  "genutility[atomic,file]>=0.0.80",
+  "platformdirs>=3",
+  "pynacl>=1.4",
+  "pyotp>=2.6",
+  "rich>=13",
+  "typing-extensions>=4",
 ]
 optional-dependencies.qr = [
   "mss",
-  "pillow",
+  "pillow>=10",
   "pyzbar",
 ]
 urls.Homepage = "https://github.com/Dobatymo/otp-tool"
