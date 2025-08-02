@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.6.0
+  rev: v5.0.0
   hooks:
   - id: check-added-large-files
   - id: check-case-conflict
@@ -18,7 +18,7 @@ repos:
   - id: trailing-whitespace
     args: [--markdown-linebreak-ext=md]
 - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-  rev: v2.13.0
+  rev: v2.14.0
   hooks:
   - id: pretty-format-yaml
     args: [--autofix]
@@ -70,6 +70,7 @@ repos:
     - mss==9.0.2
     - pillow==10.4.0
     - pyzbar==0.1.9
+    - qrcode==7.4.2
 - repo: https://github.com/Yelp/detect-secrets
   rev: v1.5.0
   hooks:

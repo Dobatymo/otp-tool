@@ -28,17 +28,18 @@ Python 3.8+.
 ## CLI help
 
 ```
-usage: otp.py [-h] [--verbose] [--path PATH] [--secret ASCII-STRING]
-              {show,export,change-password,remove,screenshot-qr,add-qr,add-uri,add-totp,add-hotp} ...
+usage: otp [-h] [--verbose] [--path PATH] [--secret ASCII-STRING]
+           {show,export,change-password,remove,screenshot-qr,add-qr,show-qr,add-uri,add-totp,add-hotp} ...
 
 positional arguments:
-  {show,export,change-password,remove,screenshot-qr,add-qr,add-uri,add-totp,add-hotp}
+  {show,export,change-password,remove,screenshot-qr,add-qr,show-qr,add-uri,add-totp,add-hotp}
     show                Show OTP tokens
     export              Export OTP secrets (not tokens) to file or print to screen
     change-password     Change password secrets database file
     remove              Remove OTP from database
-    screenshot-qr       Add OTP to database by takeing a screenshot and scan for QR codes.
+    screenshot-qr       Add OTP to database by taking a screenshot and scan for QR codes.
     add-qr              Add OTP to database by reading a QR code from a image file.
+    show-qr             Print OTP QR Code to terminal.
     add-uri             Add OTP to database by otpauth URI
     add-totp            Add Time-based one-time password (TOTP)
     add-hotp            Add HMAC-based one-time password (HOTP)

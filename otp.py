@@ -162,6 +162,9 @@ class OTP:
         console = Console()
         console.print(table)
 
+    def get_by_id(self, otp_id: int) -> pyotp.OTP:
+        return self.otps[otp_id]
+
 
 def get_secret(prompt: str, secret: Optional[str], repeat: bool) -> str:
     if secret is None:
@@ -397,6 +400,22 @@ def cmd_add_qr(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
         return 1
 
 
+def cmd_show_qr(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
+    import qrcode
+
+    try:
+        otp = otpman.get_by_id(args.id)
+    except IndexError:
+        parser.error(f"Invalid ID {args.id}")
+
+    uri = otp.provisioning_uri()
+
+    qr = qrcode.QRCode()
+    qr.add_data(uri)
+    qr.print_ascii()
+    return 0
+
+
 def cmd_add_uri(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
     try:
         otp = pyotp.parse_uri(args.uri)
@@ -529,14 +548,14 @@ def main():
         type=int,
         metavar="N",
         default=DEFAULT_OPSLIMIT,
-        help="Specifies the opslimit for new files or for --action change-password",
+        help="Specifies the KDF operations cost for new files or for --action change-password",
     )
     parser_password.add_argument(
         "--memlimit",
         type=int,
         metavar="N",
         default=DEFAULT_MEMLIMIT,
-        help="Specifies the memlimit for new files or for --action change-password",
+        help="Specifies the KDF memory cost for new files or for --action change-password",
     )
     parser_password.set_defaults(func=cmd_change_password)
 
@@ -554,7 +573,7 @@ def main():
 
     parser_screenshot_qr = subparsers.add_parser(
         "screenshot-qr",
-        help="Add OTP to database by takeing a screenshot and scan for QR codes.",
+        help="Add OTP to database by taking a screenshot and scan for QR codes.",
         formatter_class=ArgumentDefaultsHelpFormatter,
     )
     parser_screenshot_qr.add_argument(
@@ -573,6 +592,14 @@ def main():
     )
     parser_add_qr.add_argument("--qr-path", type=Path, metavar="PATH", required=True, help="Path to QR code file")
     parser_add_qr.set_defaults(func=cmd_add_qr)
+
+    parser_show_qr = subparsers.add_parser(
+        "show-qr",
+        help="Print OTP QR Code to terminal.",
+        formatter_class=ArgumentDefaultsHelpFormatter,
+    )
+    parser_show_qr.add_argument("--id", type=int, metavar="N", required=True, help="OTD ID to show QR code for")
+    parser_show_qr.set_defaults(func=cmd_show_qr)
 
     parser_add_uri = subparsers.add_parser(
         "add-uri", help="Add OTP to database by otpauth URI", formatter_class=ArgumentDefaultsHelpFormatter

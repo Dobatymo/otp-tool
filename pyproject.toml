@@ -44,6 +44,7 @@ optional-dependencies.qr = [
   "mss",
   "pillow>=10",
   "pyzbar",
+  "qrcode",
 ]
 urls.Homepage = "https://github.com/Dobatymo/otp-tool"
 scripts.otp = "otp:main"
