@@ -6,12 +6,13 @@ import csv
 import hashlib
 import json
 import logging
+import stat
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError, Namespace
 from datetime import datetime
 from getpass import getpass
 from pathlib import Path
 from time import sleep
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, TypeVar
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 import pyotp
 from genutility.atomic import write_file
@@ -28,13 +29,17 @@ from typing_extensions import Self
 
 __version__ = "0.0.1"
 
-T = TypeVar("T")
-
 APPNAME = "otp-tool"
 APPAUTHOR = "Dobatymo"
 
 DEFAULT_OPSLIMIT = pwhash.argon2i.OPSLIMIT_SENSITIVE
 DEFAULT_MEMLIMIT = pwhash.argon2i.MEMLIMIT_SENSITIVE
+DIGESTS = {
+    "sha1": hashlib.sha1,
+    "sha256": hashlib.sha256,
+    "sha512": hashlib.sha512,
+}
+OtpEntry = Union[pyotp.TOTP, pyotp.HOTP]
 
 
 class KdfConfig(TypedDict):
@@ -72,8 +77,15 @@ class BinaryDecoder(json.JSONDecoder):
         return obj
 
 
+def parse_otp_uri(uri: str) -> OtpEntry:
+    otp = pyotp.parse_uri(uri)
+    if isinstance(otp, (pyotp.TOTP, pyotp.HOTP)):
+        return otp
+    raise ValueError("Unsupported OTP type")
+
+
 class OTP:
-    def __init__(self, path: Path, kdf_config: KdfConfig, key: bytes, otps: List[pyotp.OTP]) -> None:
+    def __init__(self, path: Path, kdf_config: KdfConfig, key: bytes, otps: List[OtpEntry]) -> None:
         self.path = path
 
         self.kdf_config = kdf_config
@@ -96,7 +108,7 @@ class OTP:
     @classmethod
     def new(cls, path: Path, secret: str, opslimit: int = DEFAULT_OPSLIMIT, memlimit: int = DEFAULT_MEMLIMIT) -> Self:
         kdf_config, key = cls.get_new_key(secret, opslimit, memlimit)
-        otps: List[pyotp.OTP] = []
+        otps: List[OtpEntry] = []
         return cls(path, kdf_config, key, otps)
 
     @classmethod
@@ -110,7 +122,7 @@ class OTP:
         box = SecretBox(key)
         plaintext = box.decrypt(encrypted)
         uris = json.loads(plaintext.decode("utf-8"))
-        otps = [pyotp.parse_uri(uri) for uri in uris]
+        otps = [parse_otp_uri(uri) for uri in uris]
 
         return cls(path, kdf_config, key, otps)
 
@@ -127,24 +139,47 @@ class OTP:
         text_storage = json.dumps(storage, cls=BinaryEncoder)
         write_file(text_storage, self.path, "wt", encoding="ascii")
 
-    def add_otp(self, otp: pyotp.OTP) -> None:
+    def add_otp(self, otp: OtpEntry) -> None:
         self.otps.append(otp)
 
-    def remove_otp(self, index: int) -> pyotp.OTP:
+    def remove_otp(self, index: int) -> OtpEntry:
         return self.otps.pop(index)
 
-    def _make_table(self):
+    def _make_table(self) -> Table:
         table = Table(title="One-time passwords (press ctrl-c to quit)")
 
         table.add_column("ID")
+        table.add_column("Type")
         table.add_column("Name")
         table.add_column("Issuer")
         table.add_column("Token")
+        table.add_column("Counter")
         table.add_column("Seconds remaining")
 
         for i, otp in enumerate(self.otps):
-            time_remaining = otp.interval - datetime.now().timestamp() % otp.interval
-            table.add_row(str(i), otp.name, otp.issuer, otp.now(), f"{time_remaining:.1f}")
+            if isinstance(otp, pyotp.TOTP):
+                time_remaining = otp.interval - datetime.now().timestamp() % otp.interval
+                table.add_row(
+                    str(i),
+                    type(otp).__name__,
+                    otp.name,
+                    otp.issuer or "",
+                    otp.now(),
+                    "-",
+                    f"{time_remaining:.1f}",
+                )
+            elif isinstance(otp, pyotp.HOTP):
+                table.add_row(
+                    str(i),
+                    type(otp).__name__,
+                    otp.name,
+                    otp.issuer or "",
+                    otp.at(0),
+                    str(otp.initial_count),
+                    "-",
+                )
+            else:
+                raise TypeError()
 
         return table
 
@@ -162,7 +197,7 @@ class OTP:
         console = Console()
         console.print(table)
 
-    def get_by_id(self, otp_id: int) -> pyotp.OTP:
+    def get_by_id(self, otp_id: int) -> OtpEntry:
         return self.otps[otp_id]
 
 
@@ -250,15 +285,19 @@ def base32_arg(s: str) -> str:
     return s
 
 
-def mapping_arg(d: Dict[str, T]) -> Callable[[str], T]:
-    def inner(obj: str) -> T:
-        try:
-            return d[obj]
-        except KeyError:
-            msg = f"Must be one of {', '.join(d)}"
-            raise ArgumentTypeError(msg) from None
-
-    return inner
+class PrivateStdoutFile(StdoutFile):
+    def __init__(
+        self,
+        path: Optional[Path] = None,
+        mode: str = "xt",
+        encoding: Optional[str] = None,
+        errors: Optional[str] = None,
+        newline: Optional[str] = None,
+        compresslevel: int = 9,
+    ) -> None:
+        super().__init__(path, mode, encoding=encoding, errors=errors, newline=newline, compresslevel=compresslevel)
+        if path is not None:
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
 def cmd_show(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
@@ -275,7 +314,7 @@ def cmd_show(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
     return 0
 
 
-def otp_to_json(otp: pyotp.OTP) -> Dict[str, Any]:
+def otp_to_json(otp: OtpEntry) -> Dict[str, Any]:
     if isinstance(otp, pyotp.TOTP):
         return {
             "type": type(otp).__name__,
@@ -302,15 +341,15 @@ def otp_to_json(otp: pyotp.OTP) -> Dict[str, Any]:
 
 def cmd_export(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
     if args.format == "url":
-        with StdoutFile(args.out, "xt", encoding="utf-8") as fw:
+        with PrivateStdoutFile(args.out, "xt", encoding="utf-8") as fw:
             for otp in otpman.otps:
                 fw.write(f"{otp.provisioning_uri()}\n")
     elif args.format == "json":
-        with StdoutFile(args.out, "xt", encoding="utf-8") as fw:
+        with PrivateStdoutFile(args.out, "xt", encoding="utf-8") as fw:
             out = [otp_to_json(otp) for otp in otpman.otps]
             json.dump(out, fw)
     elif args.format == "csv":
-        with StdoutFile(args.out, "xt", encoding="utf-8", newline="") as fw:
+        with PrivateStdoutFile(args.out, "xt", encoding="utf-8", newline="") as fw:
             fieldnames = ["type", "secret", "name", "issuer", "digits", "digest", "interval", "initial_count"]
             writer = csv.DictWriter(fw, fieldnames)
             writer.writeheader()
@@ -322,7 +361,7 @@ def cmd_export(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
 
 
 def cmd_change_password(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
-    new_secret = get_secret("Password (new)", args.secret_new, repeat=True)
+    new_secret = get_secret("Password (new)", args.password_new, repeat=True)
     kdf_config, key = otpman.get_new_key(new_secret, args.opslimit, args.memlimit)
     otpman.kdf_config = kdf_config
     otpman.key = key
@@ -356,7 +395,7 @@ def cmd_screenshot_qr(parser: ArgumentParser, args: Namespace, otpman: OTP) -> i
         uri = data.decode("ascii")
 
         try:
-            otp = pyotp.parse_uri(uri)
+            otp = parse_otp_uri(uri)
         except ValueError as e:
             print(f"{e}: {uri}")
         else:
@@ -385,7 +424,7 @@ def cmd_add_qr(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
         uri = data.decode("ascii")
 
         try:
-            otp = pyotp.parse_uri(uri)
+            otp = parse_otp_uri(uri)
         except ValueError as e:
             print(f"{e}: {uri}")
         else:
@@ -418,7 +457,7 @@ def cmd_show_qr(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
 
 def cmd_add_uri(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
     try:
-        otp = pyotp.parse_uri(args.uri)
+        otp = parse_otp_uri(args.uri)
     except ValueError as e:
         parser.error(str(e))
 
@@ -431,7 +470,7 @@ def cmd_add_uri(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
 def cmd_add_totp(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
     kwargs = {
         "digits": args.digits,
-        "digest": args.digest,
+        "digest": DIGESTS[args.digest],
         "name": args.name,
         "issuer": args.issuer,
         "interval": args.interval,
@@ -453,7 +492,7 @@ def cmd_add_hotp(parser: ArgumentParser, args: Namespace, otpman: OTP) -> int:
     kwargs = {
         "initial_count": args.initial_count,
         "digits": args.digits,
-        "digest": args.digest,
+        "digest": DIGESTS[args.digest],
         "name": args.name,
         "issuer": args.issuer,
     }
@@ -479,12 +518,6 @@ def main():
 
     DEFAULT_PATH = Path(user_data_dir(APPNAME, APPAUTHOR)) / DEFAULT_FILENAME
 
-    digests = {
-        "sha1": hashlib.sha1,
-        "sha256": hashlib.sha256,
-        "sha512": hashlib.sha512,
-    }
-
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument(
         "--verbose",
@@ -499,7 +532,7 @@ def main():
         help="Path to the file where the secrets are stored.",
     )
     parser.add_argument(
-        "--secret",
+        "--password",
         type=str,
         metavar="ASCII-STRING",
         help="Password to encrypt OTP file. Needs to be ASCII. If not specified it will show a input prompt.",
@@ -538,7 +571,7 @@ def main():
         "change-password", help="Change password secrets database file", formatter_class=ArgumentDefaultsHelpFormatter
     )
     parser_password.add_argument(
-        "--secret-new",
+        "--password-new",
         type=str,
         metavar="ASCII-STRING",
         help="New password. If not specified it will show a input prompt.",
@@ -622,9 +655,8 @@ def main():
     )
     parser_add_totp.add_argument(
         "--digest",
-        type=mapping_arg(digests),
         default="sha1",
-        choices=digests.keys(),
+        choices=DIGESTS.keys(),
         help="Digest function to use in the HMAC.",
     )
     parser_add_totp.add_argument("--name", type=str, metavar="TEXT", default=None, help="Account name.")
@@ -649,9 +681,8 @@ def main():
     )
     parser_add_hotp.add_argument(
         "--digest",
-        type=mapping_arg(digests),
         default="sha1",
-        choices=digests.keys(),
+        choices=DIGESTS.keys(),
         help="Digest function to use in the HMAC.",
     )
     parser_add_hotp.add_argument("--name", type=str, default=None, help="Account name.")
@@ -675,7 +706,7 @@ def main():
 
     if args.path.exists():
         try:
-            secret = get_secret("Password", args.secret, repeat=False)
+            secret = get_secret("Password", args.password, repeat=False)
         except ValueError as e:
             parser.error(str(e))
         try:
@@ -684,7 +715,7 @@ def main():
             parser.error(str(e))
     else:
         try:
-            secret = get_secret("Password", args.secret, repeat=True)
+            secret = get_secret("Password", args.password, repeat=True)
         except ValueError as e:
             parser.error(str(e))
         otpman = OTP.new(args.path, secret, args.opslimit, args.memlimit)

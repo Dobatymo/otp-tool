@@ -49,31 +49,31 @@ optional-dependencies.qr = [
 urls.Homepage = "https://github.com/Dobatymo/otp-tool"
 scripts.otp = "otp:main"
 
-[tool.black]
-line-length = 120
-
 [tool.ruff]
 line-length = 120
 lint.extend-select = [
   "B",
+  "C4",
   "I",
+  "PIE",
+  "RUF",
+  "S",
+  "SIM",
+  "UP",
 ]
 lint.ignore = [
   "B011",
+  "S101",
 ]
 
-[tool.isort]
-profile = "black"
-line_length = 120
-
 [tool.mypy]
+check_untyped_defs = true
 ignore_missing_imports = true
 no_implicit_optional = true
 warn_redundant_casts = true
+warn_unused_configs = true
 warn_unused_ignores = true
 warn_unreachable = true
 
-[tool.bandit]
-skips = [
-  "B101",
-]
+[tool.uv]
+required-version = ">=0.8.4"
